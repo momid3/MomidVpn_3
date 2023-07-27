@@ -1,6 +1,6 @@
 pub struct Buffer {
 
-    pub buffer : [u8; 3000],
+    pub buffer : [u8; 7000],
     pub current_size : usize
 }
 
@@ -8,14 +8,14 @@ impl Buffer {
 
 
     pub fn new() -> Buffer {
-        return Buffer { buffer : [0u8; 3000], current_size : 0 };
+        return Buffer { buffer : [0u8; 7000], current_size : 0 };
     }
 
 
 
 
     pub fn new_from(byte_array: &[u8]) -> Buffer {
-        let mut buffer = Buffer { buffer : [0u8; 3000], current_size : 0 };
+        let mut buffer = Buffer { buffer : [0u8; 7000], current_size : 0 };
         buffer.put(byte_array);
         return buffer;
     }
@@ -30,12 +30,12 @@ impl Buffer {
 
 
     pub fn put(& mut self, byte_array: &[u8]) {
-        self.buffer[0..byte_array.len().min(3000)].clone_from_slice(&byte_array[0..byte_array.len().min(3000)]);
-        self.current_size = byte_array.len().min(3000);
+        self.buffer[0..byte_array.len()].clone_from_slice(byte_array);
+        self.current_size = byte_array.len()
     }
 
     pub fn append(& mut self, byte_array: &[u8]) {
         self.buffer[self.current_size..self.current_size + byte_array.len()].clone_from_slice(byte_array);
-        self.current_size += byte_array.len();
+        self.current_size += byte_array.len()
     }
 }

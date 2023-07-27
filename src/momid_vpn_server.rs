@@ -50,20 +50,11 @@ pub fn start() {
 
 
     let thread = thread::spawn(move || {
-        let mut ethernet_buffer = [0u8; 3000];
-        let mut ip_buffer = [0u8; 3000];
         'aloop: loop {
             match receiver_of_executor.recv() {
                 Ok(mut packet) => {
-
-                    let packet_received = packet.get();
-                    let packet_size = packet_received.len();
-
-                    ethernet_buffer[0..packet_size].copy_from_slice(packet.get());
-                    ip_buffer[0..packet_size - MutableEthernetPacket::minimum_packet_size()].copy_from_slice(&ethernet_buffer[MutableEthernetPacket::minimum_packet_size()..packet_size]);
-
-                    if let Some(ethernet_packet) = MutableEthernetPacket::new(&mut ethernet_buffer[0..packet_size]) {
-                        if let Some(mut ip_packet) = MutableIpv4Packet::new(&mut ip_buffer[0..packet_size - MutableEthernetPacket::minimum_packet_size()]) {
+                    if let Some(ethernet_packet) = MutableEthernetPacket::new(packet.get()) {
+                        if let Some(mut ip_packet) = MutableIpv4Packet::new(&mut ethernet_packet.payload().to_owned()) {
                             if ip_packet.get_source() == Ipv4Addr::from([146, 70, 145, 152])  {
                                 continue;
                             }
