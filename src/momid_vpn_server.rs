@@ -65,7 +65,7 @@ pub fn start() {
                                     if udp_packet.get_destination() == 7073 || udp_packet.get_destination() == 22 {
                                         continue 'aloop;
                                     }
-                                    ip_packet.set_destination(Ipv4Addr::from([192, 168, 1, 1]));
+                                    ip_packet.set_destination(Ipv4Addr::from([192, 168, 3, 7]));
                                     ip_packet.set_checksum(checksum(&ip_packet.to_immutable()));
 
                                     udp_packet.set_checksum(ipv4_checksum(&udp_packet.to_immutable(), &ip_packet.get_source(), &ip_packet.get_destination()));
@@ -96,7 +96,7 @@ pub fn start() {
                                     if tcp_packet.get_destination() == 7073 || tcp_packet.get_destination() == 22 {
                                         continue 'aloop;
                                     }
-                                    ip_packet.set_destination(Ipv4Addr::from([192, 168, 1, 1]));
+                                    ip_packet.set_destination(Ipv4Addr::from([192, 168, 3, 7]));
                                     ip_packet.set_checksum(checksum(&ip_packet.to_immutable()));
 
                                     tcp_packet.set_checksum(tcp::ipv4_checksum(&tcp_packet.to_immutable(), &ip_packet.get_source(), &ip_packet.get_destination()));
