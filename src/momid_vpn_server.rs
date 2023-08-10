@@ -1,6 +1,7 @@
 extern crate pnet;
 
 use std::cell::{Cell, RefCell};
+use std::io::Error;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::from_utf8;
 use std::sync::{Arc, mpsc, Mutex};
@@ -14,19 +15,19 @@ use pnet::packet::{FromPacket, Packet, tcp};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::tcp::{MutableTcpPacket, TcpPacket};
 use pnet::packet::udp::{ipv4_checksum, MutableUdpPacket};
+use tokio::io::AsyncWriteExt;
+use tokio::net::tcp::OwnedWriteHalf;
 use crate::arp_packet;
 use crate::buffer_util::Buffer;
+use crate::tcp_client::TcpServer;
 use crate::udp_client::UdpClient;
 
-pub fn start() {
+pub async fn start() -> Result<(), Error> {
 
     let port = 7073;
     let interface = &datalink::interfaces()[1];
-    let recent_udp_socket_address = Arc::new(Mutex::new(None));
-    // let recent_ref = recent_udp_socket_address.get_mut();
-    let recent_clone = Arc::clone(&recent_udp_socket_address);
 
-    let (sender_of_executor, receiver_of_executor) = mpsc::channel::<Buffer>();
+    let (sender_of_executor, mut receiver_of_executor) = tokio::sync::mpsc::channel::<Buffer>(300);
 
 
     let (mut sender, mut receiver) = match datalink::channel(&interface, Default::default()) {
@@ -35,24 +36,26 @@ pub fn start() {
         Err(e) => panic!("An error occurred when creating the datalink channel: {}", e)
     };
 
-    let (udp_sender_executor, udp_receiver_executor) = mpsc::channel::<(Buffer, SocketAddr)>();
-    let mut udp_client = UdpClient::new(SocketAddr::from(SocketAddrV4::new(Ipv4Addr::from([0, 0, 0, 0]), port)), udp_sender_executor);
-
-    udp_client.init();
-    udp_client.start_receiving();
-    let udp_sender = udp_client.sender_channel.unwrap();
+    let (tcp_server, mut receiver_of_connection, mut receiver_of_udp_executor) = TcpServer::new("0.0.0.0:7073").await?;
+    tokio::spawn(async move {
+        tcp_server.init().await
+    });
+    let current_tcp_client: Arc<tokio::sync::Mutex<Option<OwnedWriteHalf>>> = Arc::new(tokio::sync::Mutex::new(None));
+    let current_tcp_client_clone = Arc::clone(&current_tcp_client);
 
     let (source_mac_address, destination_mac_address) = arp_packet::start();
     if source_mac_address.is_none() || destination_mac_address.is_none() {
         panic!("source mac address or destination mac address is none")
     }
 
+    let mut final_packet_buffer = Buffer::new();
 
 
-    let thread = thread::spawn(move || {
+
+    let thread = tokio::spawn(async move {
         'aloop: loop {
-            match receiver_of_executor.recv() {
-                Ok(mut packet) => {
+            match receiver_of_executor.recv().await {
+                Some(mut packet) => {
                     if let Some(ethernet_packet) = MutableEthernetPacket::new(packet.get()) {
                         if let Some(mut ip_packet) = MutableIpv4Packet::new(&mut ethernet_packet.payload().to_owned()) {
                             if ip_packet.get_source() == Ipv4Addr::from([146, 70, 145, 152])  {
@@ -75,13 +78,20 @@ pub fn start() {
                                     println!("the packet length is : {}", ip_packet.packet().len());
 
                                     ip_packet.set_payload(udp_packet.packet());
-                                    let ip_packet_buffer = Buffer::new_from(ip_packet.packet());
-                                    let recent_value = recent_udp_socket_address.lock().unwrap();
-                                    if (*recent_value).is_some() {
-                                        match udp_sender.send((ip_packet_buffer, (*recent_value).unwrap())) {
+                                    // let ip_packet_buffer = Buffer::new_from(ip_packet.packet());
+                                    let mut recent_value = current_tcp_client_clone.lock().await;
+                                    if ip_packet.packet().len() > 3000 {
+                                        println!("internet is more than allowed");
+                                        continue 'aloop
+                                    }
+                                    if let Some(tcp_stream) = recent_value.as_mut() {
+                                        let ip_packet_size: u16 = ip_packet.packet().len() as u16;
+                                        final_packet_buffer.put(&ip_packet_size.to_be_bytes());
+                                        final_packet_buffer.append(ip_packet.packet());
+                                        match tcp_stream.write_all(final_packet_buffer.get()).await {
                                             Ok(_) => {
                                                 println!("sent udp")
-                                            }
+                                            },
                                             Err(e) => {
                                                 eprintln!("{}", e);
                                             }
@@ -106,13 +116,20 @@ pub fn start() {
                                     println!("the packet length is : {}", ip_packet.packet().len());
 
                                     ip_packet.set_payload(tcp_packet.packet());
-                                    let ip_packet_buffer = Buffer::new_from(ip_packet.packet());
-                                    let recent_value = recent_udp_socket_address.lock().unwrap();
-                                    if (*recent_value).is_some() {
-                                        match udp_sender.send((ip_packet_buffer, (*recent_value).unwrap())) {
+                                    // let ip_packet_buffer = Buffer::new_from(ip_packet.packet());
+                                    let mut recent_value = current_tcp_client_clone.lock().await;
+                                    if ip_packet.packet().len() > 3000 {
+                                        println!("internet is more than allowed");
+                                        continue 'aloop
+                                    }
+                                    if let Some(tcp_stream) = recent_value.as_mut() {
+                                        let ip_packet_size: u16 = ip_packet.packet().len() as u16;
+                                        final_packet_buffer.put(&ip_packet_size.to_be_bytes());
+                                        final_packet_buffer.append(ip_packet.packet());
+                                        match tcp_stream.write_all(final_packet_buffer.get()).await {
                                             Ok(_) => {
-                                                println!("sent udp")
-                                            }
+                                                println!("sent tcp")
+                                            },
                                             Err(e) => {
                                                 eprintln!("{}", e);
                                             }
@@ -128,17 +145,17 @@ pub fn start() {
                         }
                     }
                 }
-                Err(e) => {
-                    eprintln!("{}", e);
+                _ => {
+                    // eprintln!("{}", e);
                 }
             }
         }
     });
 
-    let thread = thread::spawn(move || {
-        while let Ok((mut buffer, socket_address)) = udp_receiver_executor.recv() {
-            println!("receive a packet from udp of size {} from {}", buffer.current_size, socket_address);
-            let _ = recent_clone.lock().unwrap().insert(socket_address);
+    let thread = tokio::spawn(async move {
+        while let Some(mut buffer) = receiver_of_udp_executor.recv().await {
+            println!("receive a packet from udp of size {}", buffer.current_size);
+            // let _ = recent_clone.lock().unwrap().insert(socket_address);
                 // if let Some(ethernet_packet) = MutableEthernetPacket::new(buffer.get()) {
                 if let Some(mut ip_packet) = MutableIpv4Packet::new(buffer.get()) {
                     println!("found ip in udp, its source and destination is : {} and {}", ip_packet.get_source(), ip_packet.get_destination());
@@ -177,10 +194,18 @@ pub fn start() {
                         crafted_ethernet_packet.set_payload(ip_packet.packet());
 
                         // println!("received packet : \n {:#?}", ethernet_packet);
-                        sender.send_to(crafted_ethernet_packet.packet(), None).expect("cannot send").expect("cannot send");
+                        if let Some(Err(e)) = sender.send_to(crafted_ethernet_packet.packet(), None) {
+                            println!("cannot send : {}", e)
+                        }
                     };
                 }
             // }
+        }
+    });
+
+    let thread = tokio::spawn(async move {
+        while let Some(writer) = receiver_of_connection.recv().await {
+            let _ = current_tcp_client.lock().await.insert(writer);
         }
     });
 
@@ -191,7 +216,9 @@ pub fn start() {
                 // let packet = EthernetPacket::new(packet).unwrap();
                 let mut buffer = Buffer::new();
                 buffer.put(packet);
-                sender_of_executor.send(buffer).unwrap();
+                if let Err(e) = sender_of_executor.send(buffer).await {
+
+                };
             }
             Err(e) => {
                 eprintln!("{}", e);
