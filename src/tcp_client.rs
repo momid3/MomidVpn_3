@@ -5,6 +5,7 @@ use tokio::io::{self, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{self, Sender, Receiver};
 use crate::buffer_util::Buffer;
+use crate::hide_bytearray::CLIENT_DATA;
 
 pub struct TcpServer {
     listener: TcpListener,
@@ -15,8 +16,8 @@ pub struct TcpServer {
 impl TcpServer {
     pub async fn new(addr: &str) -> Result<(Self, Receiver<OwnedWriteHalf>, Receiver<Buffer>), Error> {
         let listener = TcpListener::bind(addr).await?;
-        let (sender_of_executor, receiver_of_executor) = mpsc::channel(300); // Creates a new mpsc channel
-        let (sender_of_connection, receiver_of_connection) = mpsc::channel(300); // Creates a new mpsc channel
+        let (sender_of_executor, receiver_of_executor) = mpsc::channel(3000); // Creates a new mpsc channel
+        let (sender_of_connection, receiver_of_connection) = mpsc::channel(3000); // Creates a new mpsc channel
         Ok((Self { listener, sender_of_executor, sender_of_connection }, receiver_of_connection, receiver_of_executor))
     }
 
@@ -36,9 +37,23 @@ impl TcpServer {
     }
 
     async fn handle_client(mut reader: OwnedReadHalf, sender_of_executor: &mut Sender<Buffer>) {
-        let mut buffer = [0; 65535];
+        let mut buffer = [0; 7000];
         let mut size_buffer = [0; 2];
+        let mut hide_buffer = [0u8; CLIENT_DATA.len()];
         let mut buffered = BufReader::new(&mut reader);
+
+        match buffered.read_exact(&mut hide_buffer).await {
+            Ok(size_read) => {
+                if size_read > 0 {
+
+                } else {
+                    println!("size of hidden is 0");
+                }
+            }
+            Err(e) => {
+                println!("break of hidden : {:?}", e);
+            }
+        }
 
         loop {
             match buffered.read_exact(&mut size_buffer).await {

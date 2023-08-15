@@ -27,6 +27,9 @@ impl Buffer {
         return &mut (self.buffer[0..self.current_size]);
     }
 
+    pub fn get_copy(&mut self) -> Buffer {
+        return Buffer::new_from(self.get());
+    }
 
 
     pub fn put(& mut self, byte_array: &[u8]) {

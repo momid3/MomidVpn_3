@@ -5,8 +5,10 @@ use std::io::Error;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::from_utf8;
 use std::sync::{Arc, mpsc, Mutex};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc::SendError;
 use std::thread;
+use std::time::Duration;
 use pnet::datalink;
 use pnet::datalink::Channel::Ethernet;
 use pnet::packet::ethernet::{EthernetPacket, MutableEthernetPacket, Ethernet as eth, EtherType, EtherTypes};
@@ -17,9 +19,12 @@ use pnet::packet::tcp::{MutableTcpPacket, TcpPacket};
 use pnet::packet::udp::{ipv4_checksum, MutableUdpPacket};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
+use tokio::time::sleep;
 use crate::arp_packet;
 use crate::buffer_util::Buffer;
 use crate::tcp_client::TcpServer;
+use crate::hide_bytearray;
+use crate::hide_bytearray::{DATA, Hide, IS_NEW_RECEIVE, IS_NEW_SEND};
 use crate::udp_client::UdpClient;
 
 pub async fn start() -> Result<(), Error> {
@@ -27,7 +32,7 @@ pub async fn start() -> Result<(), Error> {
     let port = 7073;
     let interface = &datalink::interfaces()[1];
 
-    let (sender_of_executor, mut receiver_of_executor) = tokio::sync::mpsc::channel::<Buffer>(300);
+    let (sender_of_executor, mut receiver_of_executor) = tokio::sync::mpsc::channel::<Buffer>(3000);
 
 
     let (mut sender, mut receiver) = match datalink::channel(&interface, Default::default()) {
@@ -40,7 +45,7 @@ pub async fn start() -> Result<(), Error> {
     tokio::spawn(async move {
         tcp_server.init().await
     });
-    let current_tcp_client: Arc<tokio::sync::Mutex<Option<OwnedWriteHalf>>> = Arc::new(tokio::sync::Mutex::new(None));
+    let mut current_tcp_client: Arc<tokio::sync::Mutex<Option<OwnedWriteHalf>>> = Arc::new(tokio::sync::Mutex::new(None));
     let current_tcp_client_clone = Arc::clone(&current_tcp_client);
 
     let (source_mac_address, destination_mac_address) = arp_packet::start();
@@ -49,6 +54,8 @@ pub async fn start() -> Result<(), Error> {
     }
 
     let mut final_packet_buffer = Buffer::new();
+
+    let mut hider_buffer = Buffer::new_from(&[0u8; 3700]);
 
 
 
@@ -88,12 +95,14 @@ pub async fn start() -> Result<(), Error> {
                                         let ip_packet_size: u16 = ip_packet.packet().len() as u16;
                                         final_packet_buffer.put(&ip_packet_size.to_be_bytes());
                                         final_packet_buffer.append(ip_packet.packet());
-                                        match tcp_stream.write_all(final_packet_buffer.get()).await {
+                                        let final_packet = final_packet_buffer.get();
+                                        // let hidden_packet = Ordering::Relaxed) { IS_NEW_SEND.store(false, Ordering::Relaxed); final_packet.hide(&mut hider_buffer) } else { final_packet };
+                                        match tcp_stream.write_all(final_packet).await {
                                             Ok(_) => {
                                                 println!("sent udp")
                                             },
                                             Err(e) => {
-                                                eprintln!("{}", e);
+                                                println!("error sending udp {:?}", e);
                                             }
                                         };
                                     } else {
@@ -126,12 +135,14 @@ pub async fn start() -> Result<(), Error> {
                                         let ip_packet_size: u16 = ip_packet.packet().len() as u16;
                                         final_packet_buffer.put(&ip_packet_size.to_be_bytes());
                                         final_packet_buffer.append(ip_packet.packet());
-                                        match tcp_stream.write_all(final_packet_buffer.get()).await {
+                                        let final_packet = final_packet_buffer.get();
+                                        // let hidden_packet = if IS_NEW_SEND.load(Ordering::Relaxed) { IS_NEW_SEND.store(false, Ordering::Relaxed); final_packet.hide(&mut hider_buffer) } else { final_packet };
+                                        match tcp_stream.write_all(final_packet).await {
                                             Ok(_) => {
                                                 println!("sent tcp")
                                             },
                                             Err(e) => {
-                                                eprintln!("{}", e);
+                                                eprintln!("error sending tcp {:?}", e);
                                             }
                                         };
                                     } else {
@@ -154,10 +165,11 @@ pub async fn start() -> Result<(), Error> {
 
     let thread = tokio::spawn(async move {
         while let Some(mut buffer) = receiver_of_udp_executor.recv().await {
-            println!("receive a packet from udp of size {}", buffer.current_size);
-            // let _ = recent_clone.lock().unwrap().insert(socket_address);
-                // if let Some(ethernet_packet) = MutableEthernetPacket::new(buffer.get()) {
-                if let Some(mut ip_packet) = MutableIpv4Packet::new(buffer.get()) {
+            let actual = buffer.get();
+            // let mut actual_data = if IS_NEW_RECEIVE.load(Ordering::Relaxed) { IS_NEW_RECEIVE.store(false, Ordering::Relaxed); actual.un_hide() } else { actual };
+            let mut actual_data = actual;
+            println!("receive a packet from udp of size {}", actual_data.len());
+                if let Some(mut ip_packet) = MutableIpv4Packet::new(&mut actual_data) {
                     println!("found ip in udp, its source and destination is : {} and {}", ip_packet.get_source(), ip_packet.get_destination());
                     ip_packet.set_source(Ipv4Addr::from([146, 70, 145, 152]));
                     ip_packet.set_checksum(checksum(&ip_packet.to_immutable()));
@@ -205,7 +217,11 @@ pub async fn start() -> Result<(), Error> {
 
     let thread = tokio::spawn(async move {
         while let Some(writer) = receiver_of_connection.recv().await {
+            IS_NEW_SEND.store(true, Ordering::Relaxed);
+            IS_NEW_RECEIVE.store(true, Ordering::Relaxed);
+            sleep(Duration::from_millis(300)).await;
             let _ = current_tcp_client.lock().await.insert(writer);
+            send_hidden(&mut current_tcp_client).await;
         }
     });
 
@@ -224,5 +240,27 @@ pub async fn start() -> Result<(), Error> {
                 eprintln!("{}", e);
             }
         }
+    }
+
+
+}
+
+async fn send_hidden(tcp_writer_mutex: &mut Arc<tokio::sync::Mutex<Option<OwnedWriteHalf>>>) {
+    send_packet_to_client_tcp(DATA, tcp_writer_mutex).await;
+}
+
+async fn send_packet_to_client_tcp(packet: &[u8], tcp_writer_mutex: &mut Arc<tokio::sync::Mutex<Option<OwnedWriteHalf>>>) {
+    let mut recent_value = tcp_writer_mutex.lock().await;
+    if let Some(tcp_stream) = recent_value.as_mut() {
+        match tcp_stream.write_all(packet).await {
+            Ok(_) => {
+                println!("sent udp")
+            },
+            Err(e) => {
+                println!("error sending udp {:?}", e);
+            }
+        };
+    } else {
+        println!("recent is none");
     }
 }
