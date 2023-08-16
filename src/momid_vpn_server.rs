@@ -13,7 +13,7 @@ use pnet::datalink;
 use pnet::datalink::Channel::Ethernet;
 use pnet::packet::ethernet::{EthernetPacket, MutableEthernetPacket, Ethernet as eth, EtherType, EtherTypes};
 use pnet::packet::ipv4::{checksum, Ipv4Packet, MutableIpv4Packet};
-use pnet::packet::{FromPacket, Packet, tcp};
+use pnet::packet::{FromPacket, MutablePacket, Packet, tcp};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::tcp::{MutableTcpPacket, TcpPacket};
 use pnet::packet::udp::{ipv4_checksum, MutableUdpPacket};
@@ -22,6 +22,7 @@ use tokio::net::tcp::OwnedWriteHalf;
 use tokio::time::sleep;
 use crate::arp_packet;
 use crate::buffer_util::Buffer;
+use crate::encryption::xor_encode;
 use crate::tcp_client::TcpServer;
 use crate::hide_bytearray;
 use crate::hide_bytearray::{DATA, Hide, IS_NEW_RECEIVE, IS_NEW_SEND};
@@ -41,7 +42,7 @@ pub async fn start() -> Result<(), Error> {
         Err(e) => panic!("An error occurred when creating the datalink channel: {}", e)
     };
 
-    let (tcp_server, mut receiver_of_connection, mut receiver_of_udp_executor) = TcpServer::new("0.0.0.0:7073").await?;
+    let (tcp_server, mut receiver_of_connection, mut receiver_of_udp_executor) = TcpServer::new(format!("0.0.0.0:{}", port).as_str()).await?;
     tokio::spawn(async move {
         tcp_server.init().await
     });
@@ -72,7 +73,7 @@ pub async fn start() -> Result<(), Error> {
                                 IpNextHeaderProtocols::Udp => {
                                     let udp_bytes = &mut ip_packet.payload().to_owned();
                                     let mut udp_packet = MutableUdpPacket::new(udp_bytes).expect("cannot make udp packet");
-                                    if udp_packet.get_destination() == 7073 || udp_packet.get_destination() == 22 {
+                                    if udp_packet.get_destination() == port || udp_packet.get_destination() == 22 {
                                         continue 'aloop;
                                     }
                                     ip_packet.set_destination(Ipv4Addr::from([192, 168, 3, 7]));
@@ -91,10 +92,13 @@ pub async fn start() -> Result<(), Error> {
                                         println!("internet is more than allowed");
                                         continue 'aloop
                                     }
+                                    
                                     if let Some(tcp_stream) = recent_value.as_mut() {
-                                        let ip_packet_size: u16 = ip_packet.packet().len() as u16;
+                                        let ip_packet_buffer = ip_packet.packet_mut();
+                                        xor_encode(ip_packet_buffer, 7);
+                                        let ip_packet_size: u16 = ip_packet_buffer.len() as u16;
                                         final_packet_buffer.put(&ip_packet_size.to_be_bytes());
-                                        final_packet_buffer.append(ip_packet.packet());
+                                        final_packet_buffer.append(ip_packet_buffer);
                                         let final_packet = final_packet_buffer.get();
                                         // let hidden_packet = Ordering::Relaxed) { IS_NEW_SEND.store(false, Ordering::Relaxed); final_packet.hide(&mut hider_buffer) } else { final_packet };
                                         match tcp_stream.write_all(final_packet).await {
@@ -112,7 +116,7 @@ pub async fn start() -> Result<(), Error> {
                                 IpNextHeaderProtocols::Tcp => {
                                     let tcp_bytes = &mut ip_packet.payload().to_owned();
                                     let mut tcp_packet = MutableTcpPacket::new(tcp_bytes).expect("cannot make tcp packet");
-                                    if tcp_packet.get_destination() == 7073 || tcp_packet.get_destination() == 22 {
+                                    if tcp_packet.get_destination() == port || tcp_packet.get_destination() == 22 {
                                         continue 'aloop;
                                     }
                                     ip_packet.set_destination(Ipv4Addr::from([192, 168, 3, 7]));
@@ -131,18 +135,21 @@ pub async fn start() -> Result<(), Error> {
                                         println!("internet is more than allowed");
                                         continue 'aloop
                                     }
+                                    
                                     if let Some(tcp_stream) = recent_value.as_mut() {
-                                        let ip_packet_size: u16 = ip_packet.packet().len() as u16;
+                                        let ip_packet_buffer = ip_packet.packet_mut();
+                                        xor_encode(ip_packet_buffer, 7);
+                                        let ip_packet_size: u16 = ip_packet_buffer.len() as u16;
                                         final_packet_buffer.put(&ip_packet_size.to_be_bytes());
-                                        final_packet_buffer.append(ip_packet.packet());
+                                        final_packet_buffer.append(ip_packet_buffer);
                                         let final_packet = final_packet_buffer.get();
-                                        // let hidden_packet = if IS_NEW_SEND.load(Ordering::Relaxed) { IS_NEW_SEND.store(false, Ordering::Relaxed); final_packet.hide(&mut hider_buffer) } else { final_packet };
+                                        // let hidden_packet = Ordering::Relaxed) { IS_NEW_SEND.store(false, Ordering::Relaxed); final_packet.hide(&mut hider_buffer) } else { final_packet };
                                         match tcp_stream.write_all(final_packet).await {
                                             Ok(_) => {
-                                                println!("sent tcp")
+                                                println!("sent udp")
                                             },
                                             Err(e) => {
-                                                eprintln!("error sending tcp {:?}", e);
+                                                println!("error sending udp {:?}", e);
                                             }
                                         };
                                     } else {

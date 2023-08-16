@@ -5,6 +5,7 @@ use tokio::io::{self, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc::{self, Sender, Receiver};
 use crate::buffer_util::Buffer;
+use crate::encryption::xor_decode;
 use crate::hide_bytearray::CLIENT_DATA;
 
 pub struct TcpServer {
@@ -70,7 +71,9 @@ impl TcpServer {
                                 println!("it is more than 7000");
                                 continue;
                             }
-                            if let Err(e) = sender_of_executor.send((Buffer::new_from(&buffer[..bytes_read]))).await {
+                            let mut received_packet = Buffer::new_from(&buffer[..bytes_read]);
+                            xor_decode(received_packet.get(), 7);
+                            if let Err(e) = sender_of_executor.send(received_packet).await {
                                 eprintln!("Error sending to channel: {:?}", e);
                                 break;
                             }
