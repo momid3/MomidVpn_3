@@ -30,7 +30,10 @@ use crate::udp_client::UdpClient;
 
 pub async fn start() -> Result<(), Error> {
 
-    let port = 7073;
+    let user_ports = Arc::new(tokio::sync::Mutex::new(vec![false; 65536]));
+    let user_ports_clone = Arc::clone(&user_ports);
+
+    let port = 80;
     let interface = &datalink::interfaces()[1];
 
     let (sender_of_executor, mut receiver_of_executor) = tokio::sync::mpsc::channel::<Buffer>(3000);
@@ -76,6 +79,15 @@ pub async fn start() -> Result<(), Error> {
                                     if udp_packet.get_destination() == port || udp_packet.get_destination() == 22 {
                                         continue 'aloop;
                                     }
+
+                                    let packet_port: u16 = udp_packet.get_destination();
+                                    let mut user_ports_lock = user_ports.lock().await;
+                                    let user_ports_ref: &mut Vec<bool> = user_ports_lock.as_mut();
+                                    if user_ports_ref[packet_port as usize] == false {
+                                        println!("not for user");
+                                        continue 'aloop;
+                                    }
+
                                     ip_packet.set_destination(Ipv4Addr::from([192, 168, 3, 7]));
                                     ip_packet.set_checksum(checksum(&ip_packet.to_immutable()));
 
@@ -119,6 +131,15 @@ pub async fn start() -> Result<(), Error> {
                                     if tcp_packet.get_destination() == port || tcp_packet.get_destination() == 22 {
                                         continue 'aloop;
                                     }
+
+                                    let packet_port: u16 = tcp_packet.get_destination();
+                                    let mut user_ports_lock = user_ports.lock().await;
+                                    let user_ports_ref: &mut Vec<bool> = user_ports_lock.as_mut();
+                                    if user_ports_ref[packet_port as usize] == false {
+                                        println!("not for user");
+                                        continue 'aloop;
+                                    }
+
                                     ip_packet.set_destination(Ipv4Addr::from([192, 168, 3, 7]));
                                     ip_packet.set_checksum(checksum(&ip_packet.to_immutable()));
 
@@ -146,7 +167,7 @@ pub async fn start() -> Result<(), Error> {
                                         // let hidden_packet = Ordering::Relaxed) { IS_NEW_SEND.store(false, Ordering::Relaxed); final_packet.hide(&mut hider_buffer) } else { final_packet };
                                         match tcp_stream.write_all(final_packet).await {
                                             Ok(_) => {
-                                                println!("sent udp")
+                                                println!("sent tcp")
                                             },
                                             Err(e) => {
                                                 println!("error sending udp {:?}", e);
@@ -184,12 +205,30 @@ pub async fn start() -> Result<(), Error> {
                         IpNextHeaderProtocols::Udp => {
                             let udp_bytes = &mut ip_packet.payload().to_owned();
                             let mut udp_packet = MutableUdpPacket::new(udp_bytes).expect("cannot make udp packet");
+
+                            let user_port: u16 = udp_packet.get_source();
+                            let mut user_ports_lock = user_ports_clone.lock().await;
+                            let user_ports_ref: &mut Vec<bool> = user_ports_lock.as_mut();
+                            user_ports_ref[user_port as usize] = true;
+                            // if user_ports.iter().filter(|port| **port).count() > 300 {
+                            //     clear_ports(&mut user_ports);
+                            // }
+
                             udp_packet.set_checksum(ipv4_checksum(&udp_packet.to_immutable(), &ip_packet.get_source(), &ip_packet.get_destination()));
                             ip_packet.set_payload(udp_packet.packet());
                         }
                         IpNextHeaderProtocols::Tcp => {
                             let tcp_bytes = &mut ip_packet.payload().to_owned();
                             let mut tcp_packet = MutableTcpPacket::new(tcp_bytes).expect("cannot make tcp packet");
+
+                            let user_port: u16 = tcp_packet.get_source();
+                            let mut user_ports_lock = user_ports_clone.lock().await;
+                            let user_ports_ref: &mut Vec<bool> = user_ports_lock.as_mut();
+                            user_ports_ref[user_port as usize] = true;
+                            // if user_ports.iter().filter(|port| **port).count() > 300 {
+                            //     clear_ports(&mut user_ports);
+                            // }
+
                             tcp_packet.set_checksum(tcp::ipv4_checksum(&tcp_packet.to_immutable(), &ip_packet.get_source(), &ip_packet.get_destination()));
                             ip_packet.set_payload(tcp_packet.packet());
                         }
@@ -269,5 +308,11 @@ async fn send_packet_to_client_tcp(packet: &[u8], tcp_writer_mutex: &mut Arc<tok
         };
     } else {
         println!("recent is none");
+    }
+}
+
+fn clear_ports(user_ports: &mut [bool]) {
+    for port in user_ports {
+        *port = false;
     }
 }
