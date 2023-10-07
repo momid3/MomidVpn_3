@@ -99,27 +99,4 @@ impl TcpServer {
             }
         }
     }
-
-    // async fn write_to_client(mut writer: OwnedWriteHalf, mut receiver_of_sender: Receiver<Vec<u8>>) {
-    //     loop {
-    //         match receiver_of_sender.recv().await {
-    //             Some(buffer) =>              {
-    //                 // Sends the stream and the bytes read to the channel
-    //                 if let Err(e) = writer.write_all(&buffer).await {
-    //                     eprintln!("Error sending to channel: {:?}", e);
-    //                     break;
-    //                 }
-    //             }
-    //             _ => break,
-    //         }
-    //     }
-    // }
-}
-
-// Later in your code, you can receive messages like this:
-async fn receive_messages(mut receiver: Receiver<(TcpStream, Vec<u8>)>) {
-    while let Some((stream, bytes)) = receiver.recv().await {
-        println!("Received {:?} from {:?}", bytes, stream);
-        // Process the received data...
-    }
 }

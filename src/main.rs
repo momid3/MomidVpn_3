@@ -7,6 +7,8 @@ mod buffer_util;
 mod tcp_client;
 mod hide_bytearray;
 mod encryption;
+mod protocol;
+mod header;
 
 #[tokio::main]
 async fn main() {

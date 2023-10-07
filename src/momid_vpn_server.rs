@@ -26,6 +26,7 @@ use crate::encryption::xor_encode;
 use crate::tcp_client::TcpServer;
 use crate::hide_bytearray;
 use crate::hide_bytearray::{DATA, Hide, IS_NEW_RECEIVE, IS_NEW_SEND};
+use crate::protocol::ProtocolServer;
 use crate::udp_client::UdpClient;
 
 pub async fn start() -> Result<(), Error> {
@@ -45,7 +46,7 @@ pub async fn start() -> Result<(), Error> {
         Err(e) => panic!("An error occurred when creating the datalink channel: {}", e)
     };
 
-    let (tcp_server, mut receiver_of_connection, mut receiver_of_udp_executor) = TcpServer::new(format!("0.0.0.0:{}", port).as_str()).await?;
+    let (tcp_server, mut receiver_of_connection, mut receiver_of_udp_executor) = ProtocolServer::new(format!("0.0.0.0:{}", port).as_str()).await?;
     tokio::spawn(async move {
         tcp_server.init().await
     });
@@ -265,9 +266,9 @@ pub async fn start() -> Result<(), Error> {
         while let Some(writer) = receiver_of_connection.recv().await {
             IS_NEW_SEND.store(true, Ordering::Relaxed);
             IS_NEW_RECEIVE.store(true, Ordering::Relaxed);
-            sleep(Duration::from_millis(300)).await;
+            // sleep(Duration::from_millis(300)).await;
             let _ = current_tcp_client.lock().await.insert(writer);
-            send_hidden(&mut current_tcp_client).await;
+            // send_hidden(&mut current_tcp_client).await;
         }
     });
 
